@@ -19,6 +19,58 @@ var keyup = player.keyup;
 window.Script342 = function()
 {
   /*
+  Request Fullscreen on Start click (enter only)
+  Slide: 1.1 Intro
+  Shape: Rectangle 3 (START)
+
+  Notes:
+  - Browsers require fullscreen requests to be initiated by a user gesture (click/tap).
+  - iOS Safari may not support true fullscreen for arbitrary elements.
+  - This is "enter only": if already fullscreen, it does nothing.
+*/
+
+(function () {
+  function isFullscreen() {
+    return !!(
+      document.fullscreenElement ||
+      document.webkitFullscreenElement ||
+      document.mozFullScreenElement ||
+      document.msFullscreenElement
+    );
+  }
+
+  function requestFullscreen() {
+    if (isFullscreen()) return;
+
+    const el = document.documentElement; // fullscreen the whole page
+
+    const req =
+      el.requestFullscreen ||
+      el.webkitRequestFullscreen ||
+      el.mozRequestFullScreen ||
+      el.msRequestFullscreen;
+
+    if (req) {
+      try {
+        const result = req.call(el);
+        // If a Promise is returned, suppress unhandled rejections
+        if (result && typeof result.then === 'function') {
+          result.catch(() => {});
+        }
+      } catch (e) {
+        // Fail silently (often blocked on some devices/browsers)
+      }
+    }
+  }
+
+  requestFullscreen();
+})();
+
+}
+
+window.Script343 = function()
+{
+  /*
   Share a link from the Share button (Web Share API + Clipboard fallback)
   Slide: 1.2 Outro
   Shape: Rectangle 3 (display text: "Share")
@@ -95,7 +147,7 @@ window.Script342 = function()
 
 }
 
-window.Script343 = function()
+window.Script344 = function()
 {
   /*
   JS Debug: detect malformed JSON in variables (ultra-light + no resolver spam)
@@ -258,7 +310,7 @@ window.Script343 = function()
 
 }
 
-window.Script344 = function()
+window.Script345 = function()
 {
   /*
   Certificate capture + download (and optional share) with robust debugging
@@ -600,7 +652,7 @@ window.Script344 = function()
 
 }
 
-window.Script345 = function()
+window.Script346 = function()
 {
   /*
   Certificate capture + download/share (html2canvas loader, Storyline-safe)
