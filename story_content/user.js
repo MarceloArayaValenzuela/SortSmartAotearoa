@@ -16,41 +16,86 @@ var slideHeight = player.slideHeight;
 var getKeyDown = player.getKeyDown;
 var keydown = player.keydown;
 var keyup = player.keyup;
-window.Script343 = function()
+window.Script342 = function()
 {
-  var player = GetPlayer();
+  /*
+  Share a link from the Share button (Web Share API + Clipboard fallback)
+  Slide: 1.2 Outro
+  Shape: Rectangle 3 (display text: "Share")
+  Trigger: Execute JavaScript when user clicks
 
-var url = https://marceloaraya.framer.website/;
+  Notes:
+  - Mobile browsers usually support navigator.share(). Desktop support varies.
+  - If sharing isn't supported, the script copies the link to clipboard.
+*/
 
-var text = "Check out Sort Smart Aotearoa — help keep Tāmaki Makaurau beautiful! ♻️ " + url;
+(function () {
+  const url = 'https://marceloaraya.framer.website/#sortsmart';
+  const title = 'Sort Smart Aotearoa';
+  const text = 'Check out Sort Smart Aotearoa — help keep Tāmaki Makaurau beautiful!';
 
-// Use Web Share API if available (mobile)
-if (navigator.share) {
-    navigator.share({
-        title: "Sort Smart Aotearoa",
-        text: "I just played Sort Smart Aotearoa! Help keep Auckland beautiful.",
-        url: url
-    }).catch(function(err) {
-        console.error("Share failed:", err);
-        // Fallback to clipboard
-        copyToClipboard(url);
-    });
-} else {
-    // Fallback for desktop
-    copyToClipboard(url);
+  function promptCopyFallback(link) {
+    // Last-resort fallback if clipboard API is unavailable/blocked
+    window.prompt('Copy this link to share:', link);
+  }
+
+  async function copyToClipboard(link) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(link);
+        alert('Link copied to clipboard! Paste it to share.');
+        return true;
+      }
+    } catch (e) {
+      // fall through
+    }
+
+    // Older fallback (may still be blocked in some contexts)
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = link;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) {
+        alert('Link copied to clipboard! Paste it to share.');
+        return true;
+      }
+    } catch (e) {
+      // fall through
+    }
+
+    promptCopyFallback(link);
+    return false;
+  }
+
+  async function shareLink() {
+    // Prefer native share sheet when available
+    try {
+      if (navigator.share) {
+        await navigator.share({ title, text, url });
+        return;
+      }
+    } catch (e) {
+      // If user cancels share, do nothing.
+      // If it fails for other reasons, we fall back to clipboard.
+      if (String(e && e.name) === 'AbortError') return;
+    }
+
+    // Desktop fallback: copy the link
+    await copyToClipboard(url);
+  }
+
+  shareLink();
+})();
+
 }
 
-// Helper function to copy text to clipboard
-function copyToClipboard(text) {
-    navigator.clipboard.writeText(text).then(function() {
-        alert("Link copied to clipboard! You can now share it.");
-    }).catch(function(err) {
-        alert("Unable to copy. You can manually copy this link: " + text);
-    });
-}
-}
-
-window.Script344 = function()
+window.Script343 = function()
 {
   /*
   JS Debug: detect malformed JSON in variables (ultra-light + no resolver spam)
@@ -209,6 +254,348 @@ window.Script344 = function()
     // Never break the slide
     try { console.error('[JS Debug] Unexpected error (caught):', e); } catch (_) {}
   }
+})();
+
+}
+
+window.Script344 = function()
+{
+  /*
+  Certificate capture + download (and optional share) with robust debugging
+
+  Slide: Certificate
+  Trigger: Execute JavaScript when the user clicks the "Share" button (display name: Share)
+
+  SETUP REQUIRED IN STORYLINE:
+  - Select the rectangle: certificateArea
+  - Set its Accessibility text (Alt Text) to exactly:
+      CERTIFICATE_CONTAINER
+
+  What this version improves:
+  - Debug overlay + console logs (tells you exactly why it fails)
+  - Loads html2canvas from multiple CDNs
+  - Finds the target container by:
+      1) Accessibility text (data-acc-text / aria-label / title)
+      2) Fallback: largest visible Storyline object wrapper near slide bounds
+  - Uses a Blob-based download approach (more reliable on mobile)
+  - Tries Web Share with files when available
+
+  After it works, we can turn off DEBUG.
+*/
+
+(function () {
+  const DEBUG = true;
+
+  const CERT_CONTAINER_ACC_TEXT = 'CERTIFICATE_CONTAINER';
+  const FILE_NAME = 'SortSmart_Certificate.png';
+
+  // Capture tuning
+  const CAPTURE_SCALE = 2;
+  const CAPTURE_BG = null; // or '#FAF4B4'
+
+  const SHARE_TITLE = 'Sort Smart Aotearoa';
+  const SHARE_TEXT = 'I completed Sort Smart Aotearoa — taking my first step to help keep Auckland beautiful.';
+
+  // ---------- Debug overlay ----------
+  function ensureOverlay() {
+    if (!DEBUG) return null;
+    let el = document.getElementById('__ss_cert_debug');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = '__ss_cert_debug';
+    el.style.position = 'fixed';
+    el.style.left = '12px';
+    el.style.top = '12px';
+    el.style.right = '12px';
+    el.style.zIndex = '999999';
+    el.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+    el.style.fontSize = '14px';
+    el.style.lineHeight = '1.25';
+    el.style.padding = '10px 12px';
+    el.style.background = 'rgba(0,0,0,.82)';
+    el.style.color = '#fff';
+    el.style.border = '1px solid rgba(255,255,255,.25)';
+    el.style.borderRadius = '8px';
+    el.style.maxHeight = '40vh';
+    el.style.overflow = 'auto';
+    el.style.whiteSpace = 'pre-wrap';
+    document.body.appendChild(el);
+    return el;
+  }
+
+  const overlay = ensureOverlay();
+  function log(msg, obj) {
+    if (obj !== undefined) {
+      console.log('[CERT]', msg, obj);
+    } else {
+      console.log('[CERT]', msg);
+    }
+    if (DEBUG && overlay) {
+      overlay.textContent += (overlay.textContent ? '\n' : '') + String(msg);
+    }
+  }
+
+  function fail(msg, err) {
+    console.error('[CERT][FAIL]', msg, err || '');
+    if (DEBUG && overlay) {
+      overlay.textContent += (overlay.textContent ? '\n' : '') + 'ERROR: ' + msg;
+    }
+    alert(msg);
+  }
+
+  // Prevent double click races
+  if (window.__ss_certCaptureBusy) {
+    log('Busy: ignoring click');
+    return;
+  }
+  window.__ss_certCaptureBusy = true;
+
+  function cssEscape(s) {
+    return String(s)
+      .replace(/\\/g, '\\\\')
+      .replace(/\"/g, '\\"')
+      .replace(/\n/g, ' ')
+      .replace(/\r/g, ' ');
+  }
+
+  // ---------- html2canvas loader (multi-CDN) ----------
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+
+  async function loadHtml2Canvas() {
+    if (typeof html2canvas !== 'undefined') {
+      log('html2canvas already available');
+      return html2canvas;
+    }
+
+    if (window.__ss_html2canvasLoadingPromise) {
+      log('Waiting for existing html2canvas load promise');
+      return window.__ss_html2canvasLoadingPromise;
+    }
+
+    const cdns = [
+      'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js',
+      'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js',
+      'https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js'
+    ];
+
+    window.__ss_html2canvasLoadingPromise = (async () => {
+      let lastErr;
+      for (let i = 0; i < cdns.length; i++) {
+        const src = cdns[i];
+        try {
+          log('Loading html2canvas from: ' + src);
+          await loadScript(src);
+          if (typeof html2canvas !== 'undefined') {
+            log('html2canvas loaded OK');
+            return html2canvas;
+          }
+          lastErr = new Error('Loaded script but html2canvas is undefined');
+        } catch (e) {
+          lastErr = e;
+          log('Failed loading from: ' + src);
+        }
+      }
+      throw lastErr || new Error('Failed to load html2canvas');
+    })();
+
+    return window.__ss_html2canvasLoadingPromise;
+  }
+
+  // ---------- DOM target discovery ----------
+  function findByAccText(label) {
+    const selectors = [
+      `[data-acc-text="${cssEscape(label)}"]`,
+      `[aria-label="${cssEscape(label)}"]`,
+      `[title="${cssEscape(label)}"]`
+    ];
+    for (let i = 0; i < selectors.length; i++) {
+      const el = document.querySelector(selectors[i]);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function isVisible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+    return true;
+  }
+
+  async function waitForVisible(el, timeoutMs = 2500) {
+    const start = performance.now();
+    while (performance.now() - start < timeoutMs) {
+      if (isVisible(el)) return true;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    return isVisible(el);
+  }
+
+  function guessCertificateContainerFallback() {
+    // Fallback strategy:
+    // Find the largest visible element that looks like a Storyline object wrapper.
+    // This is heuristic; we log what we picked.
+    const candidates = Array.from(document.querySelectorAll('div'))
+      .filter(isVisible)
+      .map(el => ({ el, r: el.getBoundingClientRect() }))
+      .filter(x => x.r.width > 200 && x.r.height > 200)
+      .sort((a, b) => (b.r.width * b.r.height) - (a.r.width * a.r.height));
+
+    if (!candidates.length) return null;
+
+    const pick = candidates[0];
+    log(`Fallback pick: ${Math.round(pick.r.width)}x${Math.round(pick.r.height)} at (${Math.round(pick.r.left)},${Math.round(pick.r.top)})`);
+    return pick.el;
+  }
+
+  // ---------- Download/share helpers ----------
+  function canvasToBlob(canvas) {
+    return new Promise((resolve) => {
+      if (!canvas) return resolve(null);
+      if (canvas.toBlob) {
+        canvas.toBlob((blob) => resolve(blob), 'image/png');
+      } else {
+        const dataUrl = canvas.toDataURL('image/png');
+        const byteString = atob(dataUrl.split(',')[1]);
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+        resolve(new Blob([ab], { type: 'image/png' }));
+      }
+    });
+  }
+
+  function downloadBlob(blob, filename) {
+    // More reliable than data URLs, especially on mobile
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 500);
+  }
+
+  async function tryShareFile(blob, filename) {
+    try {
+      if (!blob) return false;
+      const file = new File([blob], filename, { type: 'image/png' });
+      if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+        await navigator.share({ title: SHARE_TITLE, text: SHARE_TEXT, files: [file] });
+        log('Shared via Web Share');
+        return true;
+      }
+    } catch (e) {
+      if (String(e && e.name) === 'AbortError') {
+        log('Share canceled by user');
+        return true;
+      }
+      log('Share failed; will fall back to download');
+    }
+    return false;
+  }
+
+  // ---------- Main ----------
+  async function run() {
+    log('Starting capture...');
+    log('Location: ' + window.location.href);
+
+    // Find container
+    let container = findByAccText(CERT_CONTAINER_ACC_TEXT);
+    if (container) {
+      log('Found container by Accessibility text');
+    } else {
+      log('Could not find by Accessibility text. Trying fallback heuristic...');
+      container = guessCertificateContainerFallback();
+    }
+
+    if (!container) {
+      fail(
+        'Could not find the certificate container in the published page.\n\n' +
+        'Fix: Select "certificateArea" and set its Accessibility text to:\n' +
+        CERT_CONTAINER_ACC_TEXT
+      );
+      return;
+    }
+
+    const vis = await waitForVisible(container, 2500);
+    if (!vis) {
+      fail('The certificate area is not visible yet. Click "Reveal" first, then click Share again.');
+      return;
+    }
+
+    const rect = container.getBoundingClientRect();
+    log(`Container rect: ${Math.round(rect.width)}x${Math.round(rect.height)}`);
+
+    // Load html2canvas
+    let h2c;
+    try {
+      h2c = await loadHtml2Canvas();
+    } catch (e) {
+      fail('html2canvas could not be loaded. If you are hosting on Vercel, confirm this page can load CDN scripts.', e);
+      return;
+    }
+
+    // Capture
+    let canvas;
+    try {
+      log('Capturing...');
+      canvas = await h2c(container, {
+        scale: CAPTURE_SCALE,
+        backgroundColor: CAPTURE_BG,
+        useCORS: true,
+        allowTaint: false,
+        logging: false
+      });
+      log(`Canvas: ${canvas.width}x${canvas.height}`);
+    } catch (e) {
+      fail(
+        'Capture failed. Most common cause is CORS-tainted images/fonts.\n\n' +
+        'Make sure all images are imported into Storyline (not externally hosted) and test again.',
+        e
+      );
+      return;
+    }
+
+    // Export + download/share
+    const blob = await canvasToBlob(canvas);
+    if (!blob) {
+      fail('Could not convert capture to PNG blob.');
+      return;
+    }
+
+    const shared = await tryShareFile(blob, FILE_NAME);
+    if (!shared) {
+      log('Downloading PNG...');
+      downloadBlob(blob, FILE_NAME);
+      log('Download triggered (if your browser allows it).');
+    }
+
+    log('Done.');
+  }
+
+  Promise.resolve()
+    .then(run)
+    .finally(() => {
+      setTimeout(() => {
+        window.__ss_certCaptureBusy = false;
+      }, 800);
+    });
 })();
 
 }
