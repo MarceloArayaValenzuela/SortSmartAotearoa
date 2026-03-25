@@ -313,40 +313,54 @@ window.Script345 = function()
 window.Script346 = function()
 {
   /*
-  JS - Capture certificate (exclude buttons) - Share/Download
+  JS - Capture certificate (crop to certificateArea, hide buttons) - Share/Download
 
   Slide: Certificate
 
-  Recommended trigger in Storyline:
+  Trigger in Storyline:
   - Execute JavaScript: this code
   - When user clicks: Share (display name: Share; button text: “Complete”)
 
-  Purpose:
-  - Capture a screenshot of the certificate area (actually: the full slide container so content is included)
-  - Exclude the buttons “Show Again” and “Complete” from the image by hiding them during capture
-  - Download PNG and attempt Web Share (mobile) when available
+  What it does:
+  - Uses html2canvas to capture the currently-visible slide content
+  - Tries to inline currently-loaded <img> elements to data URLs (helps with missing images)
+  - Temporarily hides the two buttons so they are NOT included in the image
+  - Crops the resulting image to the on-screen bounds of the rectangle named “certificateArea”
+  - Downloads PNG and attempts Web Share on supported devices
 
-  Setup:
-  - Ensure the rectangle named “certificateArea” has Accessibility text (Alt Text) exactly:
-      CERTIFICATE_CONTAINER
+  Required Storyline setup (IMPORTANT):
+  1) Set Accessibility text (Alt Text) for these shapes:
+     - Rectangle 2 (button text “Show Again”)  ->  BTN_SHOW_AGAIN
+     - Share       (button text “Complete”)   ->  BTN_COMPLETE
+
+  2) Ensure the rectangle named “certificateArea” has Accessibility text (Alt Text) exactly:
+     - CERTIFICATE_CONTAINER
+
+  Notes / limits:
+  - Still “best effort” due to browser limitations and html2canvas.
+  - Inlining images only works for images that are same-origin and can be fetched as blobs.
+  - If you publish to Vercel with strict CSP, allow the html2canvas CDN (or self-host it).
 */
 
 (function () {
   const DEBUG = false;
 
+  // Accessibility labels (Alt Text) you set in Storyline
   const CERT_CONTAINER_ACC_TEXT = 'CERTIFICATE_CONTAINER';
+  const BTN_SHOW_AGAIN_ACC_TEXT = 'BTN_SHOW_AGAIN';
+  const BTN_COMPLETE_ACC_TEXT = 'BTN_COMPLETE';
+
   const FILE_NAME = 'SortSmart_Certificate.png';
 
   // Capture tuning
-  const CAPTURE_SCALE = 2;
-  const CAPTURE_BG = null; // set to a color like '#FAF4B4' if you want a solid background
+  const CAPTURE_SCALE = 2;            // increase for sharper export (bigger file)
+  const CAPTURE_BG = null;           // e.g. '#FAF4B4' if you want to force a background
+  const WAIT_FOR_ASSETS_MS = 8000;   // longer wait for Storyline images/fonts
+  const INLINE_IMAGES_TIMEOUT_MS = 6000;
 
   // Share metadata
   const SHARE_TITLE = 'Sort Smart Aotearoa';
   const SHARE_TEXT = 'I completed Sort Smart Aotearoa — taking my first step to help keep Auckland beautiful.';
-
-  // Buttons to hide (matched by accessibility text/aria/title/innerText)
-  const EXCLUDE_BUTTON_TEXTS = ['Show Again', 'Complete'];
 
   // -------------------- Debug overlay --------------------
   function ensureOverlay() {
@@ -361,7 +375,7 @@ window.Script346 = function()
     el.style.right = '12px';
     el.style.zIndex = '999999';
     el.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
-    el.style.fontSize = '14px';
+    el.style.fontSize = '13px';
     el.style.lineHeight = '1.25';
     el.style.padding = '10px 12px';
     el.style.background = 'rgba(0,0,0,.82)';
@@ -498,13 +512,11 @@ window.Script346 = function()
   }
 
   function findBestCaptureRoot() {
-    // Capture a container that actually contains the whole slide’s DOM (not just certificateArea).
     const root = pickLargestVisibleElement([
       '[data-slide-id]',
       '[data-scene-id]',
       '.slide',
       '.slide-layer',
-      '.slideobject',
       '#slide',
       '#storyContent',
       '#content'
@@ -513,39 +525,10 @@ window.Script346 = function()
     return root || document.body;
   }
 
-  function normalizeText(s) {
-    return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  }
-
-  function elementMatchesAnyLabel(el, labels) {
-    const acc = normalizeText(el.getAttribute('data-acc-text'));
-    const aria = normalizeText(el.getAttribute('aria-label'));
-    const title = normalizeText(el.getAttribute('title'));
-    const txt = normalizeText(el.innerText);
-
-    return labels.some(l => {
-      const target = normalizeText(l);
-      return (acc === target || aria === target || title === target || txt === target);
-    });
-  }
-
-  function findElementsByLikelyButtonText(labels) {
-    const pool = Array.from(document.querySelectorAll('div, button, svg, g, span'))
-      .filter(isVisible);
-
-    const matches = [];
-    pool.forEach(el => {
-      try {
-        if (elementMatchesAnyLabel(el, labels)) matches.push(el);
-      } catch (_) {}
-    });
-
-    return Array.from(new Set(matches));
-  }
-
   function hideElementsTemporarily(elements) {
     const records = [];
     elements.forEach(el => {
+      if (!el) return;
       records.push({
         el,
         display: el.style.display,
@@ -572,7 +555,118 @@ window.Script346 = function()
     return new Promise(r => requestAnimationFrame(() => r()));
   }
 
-  // -------------------- Download/share helpers --------------------
+  async function waitForFonts(timeoutMs) {
+    try {
+      if (!document.fonts || !document.fonts.ready) return;
+      const timeout = new Promise(resolve => setTimeout(resolve, timeoutMs));
+      await Promise.race([document.fonts.ready, timeout]);
+    } catch (_) {}
+  }
+
+  async function waitForImagesIn(rootEl, timeoutMs) {
+    try {
+      const imgs = Array.from((rootEl || document).querySelectorAll('img'))
+        .filter(img => img && img.src);
+
+      if (!imgs.length) return;
+
+      await Promise.race([
+        Promise.all(imgs.map(img => {
+          try {
+            img.loading = 'eager';
+            img.decoding = 'sync';
+          } catch (_) {}
+
+          if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+          return new Promise(resolve => {
+            const done = () => resolve();
+            img.addEventListener('load', done, { once: true });
+            img.addEventListener('error', done, { once: true });
+          });
+        })),
+        new Promise(resolve => setTimeout(resolve, timeoutMs))
+      ]);
+    } catch (_) {}
+  }
+
+  function isSameOrigin(url) {
+    try {
+      const u = new URL(url, window.location.href);
+      return u.origin === window.location.origin;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function blobToDataUrl(blob) {
+    return new Promise(resolve => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => resolve(null);
+      r.readAsDataURL(blob);
+    });
+  }
+
+  async function inlineImagesIn(rootEl, timeoutMs) {
+    // Attempts to fetch same-origin images and replace their src with data URLs.
+    // This can prevent “missing image” issues in html2canvas.
+    const imgs = Array.from((rootEl || document).querySelectorAll('img'))
+      .filter(img => img && img.src && isVisible(img));
+
+    const originals = new Map();
+
+    const start = performance.now();
+    const tasks = imgs.map(async (img) => {
+      const src = img.currentSrc || img.src;
+      if (!src) return;
+      if (src.startsWith('data:')) return;
+      if (!isSameOrigin(src)) {
+        // Keep as-is; html2canvas may still render if CORS headers allow.
+        img.crossOrigin = 'anonymous';
+        return;
+      }
+
+      try {
+        originals.set(img, { src: img.src, srcset: img.getAttribute('srcset'), currentSrc: img.currentSrc });
+        img.crossOrigin = 'anonymous';
+
+        const resp = await fetch(src, { cache: 'force-cache', mode: 'same-origin' });
+        if (!resp.ok) return;
+        const blob = await resp.blob();
+        const dataUrl = await blobToDataUrl(blob);
+        if (!dataUrl) return;
+
+        // Remove srcset to prevent browser from swapping it back
+        img.removeAttribute('srcset');
+        img.src = dataUrl;
+        await waitForImagesIn(img.parentElement || rootEl, 1500);
+      } catch (_) {
+        // ignore
+      }
+    });
+
+    await Promise.race([
+      Promise.all(tasks),
+      new Promise(resolve => setTimeout(resolve, timeoutMs))
+    ]);
+
+    log('inlineImagesIn done after ms: ' + Math.round(performance.now() - start));
+
+    return function restore() {
+      originals.forEach((val, img) => {
+        try {
+          if (val.srcset != null) img.setAttribute('srcset', val.srcset);
+          img.src = val.src;
+        } catch (_) {}
+      });
+    };
+  }
+
+  // -------------------- Canvas helpers --------------------
+  function clamp(n, min, max) {
+    return Math.max(min, Math.min(max, n));
+  }
+
   function canvasToBlob(canvas) {
     return new Promise((resolve) => {
       if (!canvas) return resolve(null);
@@ -589,6 +683,30 @@ window.Script346 = function()
     });
   }
 
+  function cropCanvasToRect(sourceCanvas, rectCssPixels, scale) {
+    const sx = Math.round(rectCssPixels.left * scale);
+    const sy = Math.round(rectCssPixels.top * scale);
+    const sw = Math.round(rectCssPixels.width * scale);
+    const sh = Math.round(rectCssPixels.height * scale);
+
+    const maxW = sourceCanvas.width;
+    const maxH = sourceCanvas.height;
+
+    const cx = clamp(sx, 0, maxW);
+    const cy = clamp(sy, 0, maxH);
+    const cw = clamp(sw, 0, maxW - cx);
+    const ch = clamp(sh, 0, maxH - cy);
+
+    const out = document.createElement('canvas');
+    out.width = cw;
+    out.height = ch;
+
+    const ctx = out.getContext('2d');
+    ctx.drawImage(sourceCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
+    return out;
+  }
+
+  // -------------------- Download/share helpers --------------------
   function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -619,15 +737,13 @@ window.Script346 = function()
 
   // -------------------- Main --------------------
   async function run() {
-    const certRect = findByAccText(CERT_CONTAINER_ACC_TEXT);
-
-    let captureRoot = findBestCaptureRoot();
-    try {
-      if (!isVisible(captureRoot) || area(captureRoot) < 500 * 500) captureRoot = document.body;
-    } catch (_) {
-      captureRoot = document.body;
+    const certRectEl = findByAccText(CERT_CONTAINER_ACC_TEXT);
+    if (!certRectEl) {
+      fail('Could not find the certificate area.\n\nMake sure “certificateArea” has Accessibility text: CERTIFICATE_CONTAINER.');
+      return;
     }
 
+    const captureRoot = findBestCaptureRoot();
     const ok = await waitForVisible(captureRoot, 2500);
     if (!ok) {
       fail('The certificate is not visible yet. Click “Reveal” first, then click “Complete” again.');
@@ -638,52 +754,87 @@ window.Script346 = function()
     try {
       h2c = await loadHtml2Canvas();
     } catch (e) {
-      fail('html2canvas could not be loaded. Confirm this page can load CDN scripts.', e);
+      fail('html2canvas could not be loaded. If you have a CSP on Vercel, allow the CDN domain or self-host html2canvas.', e);
       return;
     }
 
-    // Hide buttons
-    const buttonEls = findElementsByLikelyButtonText(EXCLUDE_BUTTON_TEXTS);
-    const restoreButtons = hideElementsTemporarily(buttonEls);
+    // Buttons to hide
+    const btnShowAgain = findByAccText(BTN_SHOW_AGAIN_ACC_TEXT);
+    const btnComplete = findByAccText(BTN_COMPLETE_ACC_TEXT);
 
-    // Hide certificateArea border (optional)
-    let oldOutline, oldBorder, oldStroke;
-    if (certRect) {
-      oldOutline = certRect.style.outline;
-      oldBorder = certRect.style.border;
-      oldStroke = certRect.style.stroke;
-      certRect.style.outline = 'none';
-      certRect.style.border = 'none';
-      certRect.style.stroke = 'none';
-    }
+    const restoreButtons = hideElementsTemporarily([btnShowAgain, btnComplete]);
 
+    // Hide the certificateArea outline/border so it doesn’t appear in capture
+    const oldOutline = certRectEl.style.outline;
+    const oldBorder = certRectEl.style.border;
+    const oldStroke = certRectEl.style.stroke;
+    certRectEl.style.outline = 'none';
+    certRectEl.style.border = 'none';
+    certRectEl.style.stroke = 'none';
+
+    // Wait for assets
+    await waitForFonts(WAIT_FOR_ASSETS_MS);
+    await waitForImagesIn(captureRoot, WAIT_FOR_ASSETS_MS);
+
+    // Attempt to inline same-origin images (helps with picture states / missing badges)
+    const restoreInlined = await inlineImagesIn(captureRoot, INLINE_IMAGES_TIMEOUT_MS);
+
+    // Ensure layout updates apply
     await nextFrame();
+
+    const rect = certRectEl.getBoundingClientRect();
+    if (rect.width < 10 || rect.height < 10) {
+      restoreButtons();
+      restoreInlined();
+      certRectEl.style.outline = oldOutline || '';
+      certRectEl.style.border = oldBorder || '';
+      certRectEl.style.stroke = oldStroke || '';
+      fail('Certificate area is too small/invisible. Make sure it’s visible between 00:06 and 00:12.');
+      return;
+    }
 
     let canvas;
     try {
-      canvas = await h2c(captureRoot, {
-        scale: CAPTURE_SCALE,
-        backgroundColor: CAPTURE_BG,
-        useCORS: true,
-        allowTaint: false,
-        logging: false
-      });
+      // Try standard rendering first
+      try {
+        canvas = await h2c(captureRoot, {
+          scale: CAPTURE_SCALE,
+          backgroundColor: CAPTURE_BG,
+          useCORS: true,
+          allowTaint: true,
+          imageTimeout: WAIT_FOR_ASSETS_MS,
+          logging: false,
+          foreignObjectRendering: false
+        });
+      } catch (e1) {
+        // Fallback: foreignObjectRendering sometimes captures images/text differently.
+        log('Retrying capture with foreignObjectRendering=true');
+        canvas = await h2c(captureRoot, {
+          scale: CAPTURE_SCALE,
+          backgroundColor: CAPTURE_BG,
+          useCORS: true,
+          allowTaint: true,
+          imageTimeout: WAIT_FOR_ASSETS_MS,
+          logging: false,
+          foreignObjectRendering: true
+        });
+      }
     } catch (e) {
       fail(
-        'Capture failed. Most common cause is CORS-tainted images/fonts.\n\nMake sure all images are imported into Storyline (not externally hosted).',
+        'Capture failed. If badges are still missing, it’s typically due to how Storyline renders picture states or because some assets are blocked/tainted.\n\nIf you use CSP on Vercel, ensure images/fonts are allowed and same-origin.',
         e
       );
       return;
     } finally {
       restoreButtons();
-      if (certRect) {
-        certRect.style.outline = oldOutline || '';
-        certRect.style.border = oldBorder || '';
-        certRect.style.stroke = oldStroke || '';
-      }
+      restoreInlined();
+      certRectEl.style.outline = oldOutline || '';
+      certRectEl.style.border = oldBorder || '';
+      certRectEl.style.stroke = oldStroke || '';
     }
 
-    const blob = await canvasToBlob(canvas);
+    const cropped = cropCanvasToRect(canvas, rect, CAPTURE_SCALE);
+    const blob = await canvasToBlob(cropped);
     if (!blob) {
       fail('Could not convert capture to a PNG.');
       return;
