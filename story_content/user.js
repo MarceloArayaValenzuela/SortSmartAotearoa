@@ -16,7 +16,7 @@ var slideHeight = player.slideHeight;
 var getKeyDown = player.getKeyDown;
 var keydown = player.keydown;
 var keyup = player.keyup;
-window.Script339 = function()
+window.Script325 = function()
 {
   /*
   Request Fullscreen on Start click (enter only)
@@ -68,7 +68,7 @@ window.Script339 = function()
 
 }
 
-window.Script340 = function()
+window.Script326 = function()
 {
   /*
   Share a link from the Share button (Web Share API + Clipboard fallback)
@@ -147,7 +147,7 @@ window.Script340 = function()
 
 }
 
-window.Script341 = function()
+window.Script327 = function()
 {
   /*
   JS Debug: detect malformed JSON in variables (ultra-light + no resolver spam)
